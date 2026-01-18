@@ -1,0 +1,316 @@
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                                                                           ║
+║            HITBOX ONCHAIN - QUICK REFERENCE ARCHITECTURE                  ║
+║                                                                           ║
+║                    Last Updated: 2026-01-16                               ║
+║                                                                           ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         LAYER STACK (Bottom-Up)                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+   👤 USERS
+    │
+    ├─── Connect Wallet (MetaMask)
+    ├─── Vote on Direction
+    ├─── Watch Cursor Move
+    └─── Claim Pot After Timeout
+    │
+    ▼
+┌───────────────────────────────────────────────────────────────┐
+│ LAYER 4: CLIENT (React + Wagmi + Viem)                       │
+│ ┌─────────────────────────────────────────────────────────┐ │
+│ │ Components:                                             │ │
+│ │ • App.tsx        - Main UI, wallet, vote buttons       │ │
+│ │ • P5Canvas.tsx   - Visual layer (TODO: Phase 5)        │ │
+│ │                                                         │ │
+│ │ Hooks:                                                  │ │
+│ │ • useGameState() - Read contract state                 │ │
+│ │ • useVote()      - Submit vote transactions            │ │
+│ │ • useClaim()     - Claim pot after timeout             │ │
+│ │                                                         │ │
+│ │ Status: Built ✅ | Browser Testing Pending 🔄          │ │
+│ │ URL: http://localhost:5173 (when started)              │ │
+│ └─────────────────────────────────────────────────────────┘ │
+└───────────────────┬───────────────────────────────────────────┘
+                    │
+                    │ HTTP Requests (REST API)
+                    │ JSON-RPC (Blockchain Reads/Writes)
+                    ▼
+┌───────────────────────────────────────────────────────────────┐
+│ LAYER 3: AGGREGATOR (Node.js + Express + Viem)               │
+│ ┌─────────────────────────────────────────────────────────┐ │
+│ │ REST API Endpoints:                                     │ │
+│ │ • GET /health         - Service status                  │ │
+│ │ • GET /state          - Game state (tick, pot, etc)     │ │
+│ │ • GET /votes/current  - Current tick vote counts        │ │
+│ │                                                         │ │
+│ │ Tick Loop (500ms polling):                              │ │
+│ │ 1. Check if tick ended                                  │ │
+│ │ 2. Fetch VoteCast events                                │ │
+│ │ 3. Tally votes per direction                            │ │
+│ │ 4. Resolve winner (with tie-break if needed)            │ │
+│ │ 5. Submit finalizeTick() transaction                    │ │
+│ │                                                         │ │
+│ │ Status: Running ✅ | Auto-Finalizing ✅                 │ │
+│ │ URL: http://localhost:3001                              │ │
+│ └─────────────────────────────────────────────────────────┘ │
+└───────────────────┬───────────────────────────────────────────┘
+                    │
+                    │ JSON-RPC Calls
+                    │ (Read Contract State, Submit Transactions)
+                    ▼
+┌───────────────────────────────────────────────────────────────┐
+│ LAYER 2: CORE PACKAGE (@hitbox/core)                         │
+│ ┌─────────────────────────────────────────────────────────┐ │
+│ │ Shared TypeScript Logic:                                │ │
+│ │ • Direction enum { Up:0, Down:1, Left:2, Right:3 }      │ │
+│ │ • GameState, Vote, TickOutcome types                    │ │
+│ │ • resolveTickWinner() - Tally & determine winner        │ │
+│ │ • resolveTieBreak() - Deterministic tie resolution      │ │
+│ │   Formula: keccak256(tickNumber, prevTxHash)            │ │
+│ │                                                         │ │
+│ │ Status: Built ✅ | Imported by Aggregator & Client     │ │
+│ └─────────────────────────────────────────────────────────┘ │
+└───────────────────┬───────────────────────────────────────────┘
+                    │
+                    │ Used by Aggregator and Client
+                    ▼
+┌───────────────────────────────────────────────────────────────┐
+│ LAYER 1: SMART CONTRACT (Solidity 0.8.24)                    │
+│ ┌─────────────────────────────────────────────────────────┐ │
+│ │ HitboxPot.sol (334 lines)                               │ │
+│ │                                                         │ │
+│ │ Key State:                                              │ │
+│ │ • currentTick             - Active tick number          │ │
+│ │ • pot                     - Accumulated ETH             │ │
+│ │ • lastMover               - Eligible to claim           │ │
+│ │ • lastMoveTimestamp       - For timeout calculation     │ │
+│ │ • votes[tick][direction]  - Vote tallies                │ │
+│ │ • isTickFinalized[tick]   - Finalization status         │ │
+│ │                                                         │ │
+│ │ Key Functions:                                          │ │
+│ │ • vote(direction) payable          - Players vote       │ │
+│ │ • finalizeTick(tick, direction)    - Operator settles   │ │
+│ │ • claim() nonReentrant             - Withdraw pot       │ │
+│ │ • getState() view                  - Read all state     │ │
+│ │                                                         │ │
+│ │ Events:                                                 │ │
+│ │ • VoteCast(voter, tick, direction, amount)              │ │
+│ │ • TickFinalized(tick, winningDirection, lastMover, pot) │ │
+│ │ • Claimed(winner, amount)                               │ │
+│ │                                                         │ │
+│ │ Status: Deployed ✅ | 17 Tests Passing ✅              │ │
+│ │ Address: 0x5FbDB2315678afecb367f032d93F642f64180aa3     │ │
+│ │ Gas: vote 44k | finalize 92k | claim 35k               │ │
+│ └─────────────────────────────────────────────────────────┘ │
+└───────────────────┬───────────────────────────────────────────┘
+                    │
+                    │ Blockchain Events & State
+                    ▼
+┌───────────────────────────────────────────────────────────────┐
+│ LAYER 0: BLOCKCHAIN                                           │
+│ ┌─────────────────────────────────────────────────────────┐ │
+│ │ Current: Anvil (Local Testnet)                          │ │
+│ │ • Chain ID: 31337                                       │ │
+│ │ • Block Time: 1 second                                  │ │
+│ │ • URL: http://127.0.0.1:8545                            │ │
+│ │                                                         │ │
+│ │ Next: Base Sepolia (Public Testnet)                     │ │
+│ │ • Chain ID: 84532                                       │ │
+│ │ • URL: https://sepolia.base.org                         │ │
+│ │ • Deployment: Phase 4 (Pending)                         │ │
+│ │                                                         │ │
+│ │ Status: Anvil Running ✅                                │ │
+│ └─────────────────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          DATA FLOW EXAMPLE                               │
+└─────────────────────────────────────────────────────────────────────────┘
+
+USER VOTES "UP":
+
+1. 👤 User clicks UP button in browser
+        ↓
+2. 🌐 Client calls useVote().write({ args: [0], value: "0.001" })
+        ↓
+3. 🦊 MetaMask prompts user to confirm transaction
+        ↓
+4. 📝 Transaction submitted to blockchain
+        ↓
+5. ⛓️  Contract.vote(0) executes:
+        • Validates direction ∈ [0,3] ✓
+        • Validates msg.value >= 0.001 ETH ✓
+        • Increments votes[currentTick][0]
+        • Adds 0.001 ETH to pot
+        • Emits VoteCast event
+        ↓
+6. 📡 VoteCast event broadcasted
+        ├─→ Aggregator detects event
+        │     • Updates internal vote tally
+        │     • Waits for tick to end
+        │
+        └─→ Client event listener refetches state
+              • Pot updates in UI
+              • Vote count increments
+        ↓
+7. ⏰ 3 seconds pass, tick ends
+        ↓
+8. 🤖 Aggregator detects tick ended:
+        • Tallies final votes
+        • Determines winner (UP wins!)
+        • Submits finalizeTick(tick, 0) transaction
+        ↓
+9. ⛓️  Contract.finalizeTick() executes:
+        • Marks tick as finalized
+        • Advances to next tick
+        • Updates lastMover
+        • Emits TickFinalized event
+        ↓
+10. 📡 TickFinalized event broadcasted
+        └─→ Client updates:
+              • Tick number increments
+              • Cursor moves up in visual
+              • New countdown starts
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          KEY TIMINGS                                     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Tick Duration:        3 seconds  (immutable)
+Aggregator Poll:      500ms      (every 0.5 seconds)
+Timeout Period:       3600 seconds (60 minutes)
+Block Time (Anvil):   1 second
+Block Time (Sepolia): ~12 seconds
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        CRITICAL ADDRESSES                                │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Contract (Anvil):
+  0x5FbDB2315678afecb367f032d93F642f64180aa3
+
+Operator (Anvil Account #0):
+  0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+  Private Key: 0xac09...f80 (test key, safe to expose)
+
+Test Players (Anvil):
+  Account #1: 0x70997970C51812dc3A010C7d01b50e0d17dc79C8
+  Account #2: 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
+
+Contract (Base Sepolia):
+  TBD - Phase 4 Deployment
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        FILE STRUCTURE                                    │
+└─────────────────────────────────────────────────────────────────────────┘
+
+hitbox_onchain/
+├── contracts/                      # Foundry project
+│   ├── src/HitboxPot.sol           # Main contract (334 lines)
+│   ├── test/HitboxPot.t.sol        # Tests (17 passing)
+│   └── script/Deploy.s.sol         # Deployment script
+│
+├── aggregator/                     # Node.js service
+│   ├── src/
+│   │   ├── index.ts                # REST API server
+│   │   ├── tickLoop.ts             # Core finalization loop
+│   │   └── chainClient.ts          # Blockchain client
+│   └── .env                        # Config (RPC, address, keys)
+│
+├── packages/core/                  # Shared TypeScript
+│   └── src/
+│       ├── types.ts                # Types & enums
+│       └── tieBreak.ts             # Tie-break logic
+│
+├── client/                         # React frontend
+│   └── src/
+│       ├── App.tsx                 # Main component (218 lines)
+│       └── onchain/
+│           ├── config.ts           # Wagmi setup
+│           ├── contracts.ts        # ABI & address
+│           └── hooks.ts            # Custom hooks
+│
+├── scripts/                        # Test scripts
+│   ├── integration-test.ts         # E2E vote flow
+│   └── claim-test.ts               # Claim testing
+│
+└── docs/
+    ├── HANDOFF.md                  # Status & progress ⭐
+    ├── STATE_MACHINE.md            # Architecture diagrams ⭐
+    ├── CLAUDE.md                   # Developer guide
+    ├── PROTOCOL.md                 # Formal spec
+    └── hitbox_onchain_prd.md       # Product requirements
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        QUICK COMMANDS                                    │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Check Services:
+  curl http://localhost:3001/health         # Aggregator health
+  cast block-number --rpc-url http://127.0.0.1:8545  # Anvil status
+
+View Current State:
+  curl http://localhost:3001/state | jq
+
+Submit Test Vote:
+  cast send 0x5FbDB2315678afecb367f032d93F642f64180aa3 \
+    "vote(uint8)" 0 \
+    --value 0.001ether \
+    --private-key 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d \
+    --rpc-url http://127.0.0.1:8545
+
+Run Tests:
+  cd contracts && forge test                # Run all contract tests
+  npx tsx scripts/integration-test.ts      # Run integration test
+
+Start Services:
+  anvil --block-time 1 &                    # Start local chain
+  npm run dev:aggregator &                  # Start aggregator
+  npm run dev:client                        # Start client (foreground)
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        TROUBLESHOOTING                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Issue: Aggregator not responding
+Fix:  Check .env file has correct CONTRACT_ADDRESS
+      Restart: pkill -f dev:aggregator && npm run dev:aggregator
+
+Issue: Contract calls failing
+Fix:  Check Anvil is running: pgrep -f anvil
+      Restart Anvil and redeploy contract
+
+Issue: Client can't connect to wallet
+Fix:  Add localhost:8545 network to MetaMask:
+      Network Name: Anvil Local
+      RPC URL: http://127.0.0.1:8545
+      Chain ID: 31337
+      Currency: ETH
+
+Issue: Vote transaction reverted
+Fix:  Ensure msg.value >= 0.001 ETH
+      Ensure direction ∈ [0, 1, 2, 3]
+
+
+═══════════════════════════════════════════════════════════════════════════
+                    📚 DOCUMENTATION INDEX
+═══════════════════════════════════════════════════════════════════════════
+
+For detailed information:
+  • Architecture & Flows → STATE_MACHINE.md
+  • Current Progress    → HANDOFF.md
+  • Developer Guide     → CLAUDE.md
+  • Testing Plan        → .claude/plans/rosy-hopping-nygaard.md
+  • This Quick Ref      → ARCHITECTURE_QUICK_REF.txt
+
+═══════════════════════════════════════════════════════════════════════════

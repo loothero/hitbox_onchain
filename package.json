@@ -1,0 +1,22 @@
+{
+  "name": "hitbox-onchain",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "aggregator",
+    "client"
+  ],
+  "scripts": {
+    "dev:aggregator": "npm run dev -w aggregator",
+    "build:aggregator": "npm run build -w aggregator",
+    "dev:client": "npm run dev -w client",
+    "build:client": "npm run build -w client",
+    "dev:contracts": "cd contracts && forge build",
+    "test:contracts": "cd contracts && forge test"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0",
+    "typescript": "^5.3.0"
+  }
+}

@@ -1,0 +1,309 @@
+# Hitbox Onchain Build Plan
+Branch: hitbox_onchain
+Repo: Hitbox_HTML (fork or branch) [https://github.com/Raulonastool/Hitbox_HTML]
+
+## 0. Goal
+Build a “Hitbox Onchain” variation of the existing Hitbox_HTML project:
+- Same core client experience (exploration, fog-of-war, shared cursor).
+- Add onchain escrow + settlement for paid moves.
+- Use tick-based voting (batched inputs) to avoid “gas wars” and keep UX smooth.
+- Keep rendering and real-time gameplay offchain.
+
+Primary success condition:
+A public demo where multiple wallets can pay to vote, the cursor moves once per tick, the pot accumulates onchain, and the last-mover can claim the pot after a timeout.
+
+---
+
+## 1. Non-goals (for interns)
+- Do NOT fully onchain the world state, fog-of-war, or rendering.
+- Do NOT build complex combat, quests, or progression.
+- Do NOT require NFTs to play.
+- Do NOT over-engineer governance or “DAO” mechanics in MVP.
+
+---
+
+## 2. Proposed Architecture
+
+### 2.1 Components
+1) Web Client (existing Hitbox client + onchain UI)
+- Shows map, fog-of-war, cursor position.
+- Shows: current tick, vote options, current fee, pot size, time remaining.
+- Lets users connect wallet and submit votes.
+
+2) Smart Contracts (onchain settlement + escrow)
+- Holds pot.
+- Enforces move fee.
+- Tracks last mover.
+- Tracks timeout and allows claim after expiry.
+- Stores season seed (optional in MVP, recommended in Phase 2).
+
+3) Aggregator Service (offchain coordinator)
+- Receives votes (either from chain events, or via simple API if votes are offchain-signed).
+- Computes tick winner deterministically.
+- Submits tick result onchain.
+- Exposes a lightweight endpoint for the client to read “latest resolved tick”.
+
+### 2.2 Data Flow (MVP Hybrid)
+- Player submits vote transaction to contract (vote + fee).
+- Aggregator watches vote events for current tick.
+- At tick end, aggregator computes winner and calls `finalizeTick(...)` onchain.
+- Contract updates:
+  - lastMover
+  - lastMoveTimestamp
+  - pot accounting
+- Client updates cursor based on tick finalization events.
+
+---
+
+## 3. Chain / Stack Defaults
+Pick a low-fee EVM L2 for MVP (Base is a reasonable default if you already have Farcaster overlap).
+
+Suggested tools:
+- Contracts: Solidity + Foundry (preferred) or Hardhat
+- Indexing: simple event listener using ethers.js
+- Aggregator: Node.js service (Express or Fastify)
+- Client wallet: wagmi + viem or ethers.js
+
+---
+
+## 4. Repository Plan
+
+### 4.1 Branching
+- Create branch: `hitbox_onchain`
+- Create folders:
+  - `/contracts` (foundry or hardhat project)
+  - `/aggregator` (node service)
+  - `/client` (if you want to split) OR keep existing structure and add `/onchain`
+
+### 4.2 Environments
+- Local dev: Anvil (foundry) or Hardhat node
+- Testnet: Base Sepolia (or chosen chain’s testnet)
+- Prod demo: chain mainnet later
+
+---
+
+## 5. Milestones and Deliverables
+
+## Milestone A (Week 1): Spec lock + skeletons
+Deliverables:
+- `contracts/` compiles and deploys locally.
+- `aggregator/` runs locally and listens to contract events.
+- client can connect wallet and display onchain state placeholders.
+
+Acceptance criteria:
+- One command bootstraps local chain + deploy + aggregator + client.
+- Read-only UI shows pot size and time remaining from contract.
+
+Owner mapping:
+- Intern 1: contracts scaffold
+- Intern 2: aggregator scaffold
+- Intern 3: client wallet integration + read-only UI
+
+---
+
+## Milestone B (Week 2): Paid voting and tick finalization (end-to-end)
+Deliverables:
+- Users can submit a paid vote for a direction during a tick window.
+- Aggregator resolves winner at tick end.
+- `finalizeTick()` posts result onchain.
+- Client moves cursor once per tick based on finalized result.
+
+Acceptance criteria:
+- From two separate wallets:
+  - cast votes on different directions in the same tick
+  - see one move applied
+  - see pot increase with each vote
+- Cursor position is consistent for all viewers.
+
+Owner mapping:
+- Intern 1: contract vote storage + finalizeTick logic
+- Intern 2: aggregator tick loop + winner selection + chain submission
+- Intern 3: client shows tick countdown, submits votes, listens to tick events
+
+---
+
+## Milestone C (Week 3): Timeout + claim pot
+Deliverables:
+- Timeout resets after each finalized tick move.
+- If no finalized move occurs for TIMEOUT duration, last mover can claim pot.
+- Claim transfers funds and starts a fresh round (or resets pot to 0).
+
+Acceptance criteria:
+- After TIMEOUT:
+  - only last mover can successfully claim
+  - pot becomes 0 (or rolls to treasury, depending on rules)
+  - UI updates immediately
+
+Owner mapping:
+- Intern 1: claim logic + tests
+- Intern 2: aggregator handles “no votes” ticks cleanly
+- Intern 3: client claim UX + status messages
+
+---
+
+## Milestone D (Week 4): Hardening + demo polish
+Deliverables:
+- Basic anti-abuse mechanisms (at least one):
+  - minimum fee
+  - optional fee ramp (simple)
+  - tick vote caps per wallet per tick (optional)
+- Observability:
+  - aggregator logs
+  - client status panel
+- Deployment:
+  - testnet deploy scripts
+  - public demo link (Vercel for client, aggregator on Render/Fly/Railway)
+
+Acceptance criteria:
+- Demo survives 1 hour of chaotic play without desync.
+- Contract functions have unit tests and basic invariants.
+
+---
+
+## 6. Contract Requirements (MVP)
+Contract: `HitboxPot`
+
+### State
+- `uint256 pot`
+- `uint256 currentTick`
+- `uint256 tickDurationSeconds`
+- `uint256 tickEndTimestamp`
+- `uint256 timeoutSeconds`
+- `uint256 lastMoveTimestamp`
+- `address lastMover`
+
+Vote tracking (MVP simple):
+- mapping tick => counts[4]
+- mapping tick => mapping voter => bool hasVoted (optional)
+
+### Functions
+- `vote(uint8 direction) payable`
+- `finalizeTick(uint256 tick, uint8 winningDirection, bytes proofOrMeta)` (proof optional in MVP)
+- `claim()`
+- `getTickState()` view helpers
+
+### Events
+- `VoteCast(address voter, uint256 tick, uint8 direction, uint256 amount)`
+- `TickFinalized(uint256 tick, uint8 winningDirection, address lastMover, uint256 pot)`
+- `Claimed(address winner, uint256 amount)`
+
+### Security constraints
+- Prevent reentrancy on claim
+- Validate direction in [0..3]
+- Enforce tick window for votes
+- Only allow one finalize per tick
+- Ensure claim only after timeout AND only lastMover
+
+---
+
+## 7. Aggregator Requirements (MVP)
+Responsibilities:
+- Determine current tick boundaries (based on contract state).
+- Watch VoteCast events for current tick.
+- At tick end:
+  - compute winner (max votes, deterministic tie break)
+  - submit finalizeTick tx
+- Handle “no votes” ticks:
+  - either finalize with “no-op” (recommended) OR skip (but then timeout behavior must be correct)
+
+Tie break rule (simple deterministic):
+- If tie: pick direction = (keccak256(tick, lastFinalizedTxHash) % numTiedDirections)
+
+API (optional, but useful):
+- `GET /state` returns latest tick, remaining seconds, last winner, last mover, pot
+
+---
+
+## 8. Client Requirements (MVP)
+UI panel:
+- Wallet connect
+- Pot size
+- Tick countdown
+- Timeout countdown
+- Vote buttons (Up/Down/Left/Right)
+- Status toasts (tx pending, vote confirmed, tick finalized, claim available)
+
+Gameplay sync:
+- Cursor only moves on `TickFinalized` events.
+- Client should treat chain events as the source of truth for movement.
+- Fog-of-war remains local and based on cursor movement events.
+
+---
+
+## 9. Testing Plan
+Contracts:
+- Unit tests for:
+  - vote fee enforcement
+  - tick finalization allowed only once
+  - timeout claim rules
+  - pot accounting exactness
+- Invariant tests (basic):
+  - pot never negative
+  - claim empties pot
+  - lastMover updates only on finalize
+
+Integration:
+- Local end-to-end script:
+  - deploy
+  - cast votes from 2 wallets
+  - finalize tick
+  - wait for timeout
+  - claim
+
+Client:
+- Minimal smoke test checklist:
+  - connect wallet
+  - cast vote and see pending state
+  - see pot update
+  - see movement update on finalize
+
+---
+
+## 10. Work Breakdown (Suggested Intern Roles)
+
+### Intern A: Smart Contracts Lead
+- Owns contract spec translation, implementation, and tests.
+- Owns deploy scripts and env config.
+
+### Intern B: Aggregator Lead
+- Owns tick loop logic, event indexing, winner selection, and finalize tx.
+- Owns aggregator deployment.
+
+### Intern C: Client Lead
+- Owns wallet integration + onchain UI panel.
+- Owns event-driven movement sync.
+- Owns demo polish.
+
+Optional Intern D: QA / DevEx
+- Owns one-command local dev experience.
+- Owns integration scripts and monitoring.
+
+---
+
+## 11. Implementation Order (Do not deviate)
+1) Contract vote + finalize (no claim yet)
+2) Aggregator resolves tick and finalizes
+3) Client listens to tick finalization to move cursor
+4) Add timeout + claim
+5) Add polish and deployment
+
+---
+
+## 12. Definition of Done (MVP)
+MVP is done when:
+- Anyone can open the web demo, connect wallet, pay to vote.
+- Cursor moves once per tick based on aggregated votes.
+- Pot grows with votes.
+- If no finalized move occurs for TIMEOUT, last mover can claim pot.
+- All state transitions are anchored by onchain events.
+- Repo has clear run instructions for local + testnet.
+
+---
+
+## 13. Open Decisions (Pick quickly, do not block execution)
+- Tick duration: 2–5 seconds suggested
+- Timeout duration: 30–120 minutes suggested
+- Fee: start flat, add dynamic later
+- Chain: pick one cheap EVM L2
+
+End.

@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Environment variables (contains private keys)
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+dist/
+out/
+cache/
+artifacts/
+typechain-types/
+
+# Foundry
+contracts/cache/
+contracts/out/
+contracts/broadcast/
+contracts/lib/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing
+coverage/
+.nyc_output/
+
+# Temporary files
+*.tmp
+tmp/
+temp/
+
+# Debug
+debug/
+*.debug
+
+# Deployment artifacts (may contain sensitive data)
+deployments/*.json
+!deployments/.gitkeep
