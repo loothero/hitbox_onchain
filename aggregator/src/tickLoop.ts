@@ -27,6 +27,12 @@ async function checkAndFinalizeTick() {
         const state = await chainClient.getGameState();
         const now = BigInt(Math.floor(Date.now() / 1000));
 
+        // If contract has advanced past what we last processed, sync up
+        if (state.currentTick > lastProcessedTick + 1n) {
+            console.log(`⏩ Contract jumped from tick ${lastProcessedTick} to ${state.currentTick} (auto-advanced)`);
+            lastProcessedTick = state.currentTick - 1n;
+        }
+
         // Check if tick has ended
         if (now < state.tickEndTimestamp) {
             return; // Tick still active
@@ -40,6 +46,7 @@ async function checkAndFinalizeTick() {
         // Check if already finalized onchain
         const isFinalized = await chainClient.isTickFinalized(state.currentTick);
         if (isFinalized) {
+            console.log(`✓ Tick ${state.currentTick} already finalized onchain`);
             lastProcessedTick = state.currentTick;
             return;
         }
