@@ -48,6 +48,5 @@ temp/
 debug/
 *.debug
 
-# Deployment artifacts (may contain sensitive data)
-deployments/*.json
-!deployments/.gitkeep
+# Deployment artifacts - track deployment records
+# deployments/*.json are now tracked for reference
