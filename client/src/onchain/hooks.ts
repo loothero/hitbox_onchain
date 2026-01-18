@@ -1,6 +1,7 @@
 import { useReadContract, useWriteContract, useWatchContractEvent } from 'wagmi'
 import { HITBOX_POT_ABI, HITBOX_POT_ADDRESS } from './contracts'
 import { parseEther } from 'viem'
+import { useState, useEffect } from 'react'
 
 export function useGameState() {
     const { data, isLoading, refetch } = useReadContract({
@@ -68,4 +69,41 @@ export function useClaim() {
     }
 
     return { claim, isPending, isSuccess, error }
+}
+
+/**
+ * Hook to poll current tick vote counts from aggregator API
+ */
+export function useCurrentTickVotes() {
+    const [votes, setVotes] = useState<[number, number, number, number]>([0, 0, 0, 0])
+    const [isLoading, setIsLoading] = useState(true)
+    const AGGREGATOR_URL = 'http://localhost:3001'
+
+    useEffect(() => {
+        const fetchVotes = async () => {
+            try {
+                const response = await fetch(`${AGGREGATOR_URL}/votes/current`)
+                const data = await response.json()
+                setVotes([
+                    Number(data.votes.up),
+                    Number(data.votes.down),
+                    Number(data.votes.left),
+                    Number(data.votes.right),
+                ])
+                setIsLoading(false)
+            } catch (error) {
+                console.error('Failed to fetch vote counts:', error)
+                setIsLoading(false)
+            }
+        }
+
+        // Initial fetch
+        fetchVotes()
+
+        // Poll every 500ms
+        const interval = setInterval(fetchVotes, 500)
+        return () => clearInterval(interval)
+    }, [])
+
+    return { votes, isLoading }
 }

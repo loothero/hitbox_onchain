@@ -57,6 +57,16 @@ export const HITBOX_POT_ABI = [
         outputs: [{ name: "", type: "uint256" }],
     },
     {
+        name: "VoteCast",
+        type: "event",
+        inputs: [
+            { name: "voter", type: "address", indexed: true },
+            { name: "tick", type: "uint256", indexed: true },
+            { name: "direction", type: "uint8", indexed: false },
+            { name: "amount", type: "uint256", indexed: false },
+        ],
+    },
+    {
         name: "TickFinalized",
         type: "event",
         inputs: [
@@ -64,6 +74,14 @@ export const HITBOX_POT_ABI = [
             { name: "winningDirection", type: "uint8", indexed: false },
             { name: "lastMover", type: "address", indexed: false },
             { name: "pot", type: "uint256", indexed: false },
+        ],
+    },
+    {
+        name: "Claimed",
+        type: "event",
+        inputs: [
+            { name: "winner", type: "address", indexed: true },
+            { name: "amount", type: "uint256", indexed: false },
         ],
     },
     {
