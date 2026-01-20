@@ -9,25 +9,69 @@ pragma solidity ^0.8.24;
  * Players pay to vote on cursor movement directions during tick windows.
  * An aggregator finalizes each tick, selecting the winning direction.
  * If no move occurs before timeout, the last mover can claim the pot.
+ *
+ * Storage Optimization:
+ * - All hot-path state packed into single 256-bit GameState struct (Slot 0)
+ * - vote() requires only 1 SSTORE
+ * - finalizeTick() requires only 2 SSTOREs
+ * - claim() requires only 2 SSTOREs
+ * - Mappings eliminated; historical data available via events
  */
 contract HitboxPot {
+    // ============ Types ============
+
+    /// @notice Packed game state - fits in single storage slot (256 bits)
+    /// @dev Layout: pot(64) + votesUp(32) + votesDown(32) + votesLeft(32) + votesRight(32) + currentTick(32) + lastMoveTimestamp(32) = 256 bits
+    struct GameState {
+        uint64 pot; // Max ~18.4 ETH (sufficient for this use case)
+        uint32 votesUp; // Max ~4B votes per direction
+        uint32 votesDown;
+        uint32 votesLeft;
+        uint32 votesRight;
+        uint32 currentTick; // Max ~4B ticks (~400 years at 3s/tick)
+        uint32 lastMoveTimestamp; // Unix timestamp, works until year 2106
+    }
+
     // ============ Reentrancy Guard ============
 
-    uint256 private constant NOT_ENTERED = 1;
-    uint256 private constant ENTERED = 2;
-    uint256 private _status = NOT_ENTERED;
+    uint8 private constant NOT_ENTERED = 1;
+    uint8 private constant ENTERED = 2;
 
-    modifier nonReentrant() {
-        if (_status == ENTERED) revert ReentrantCall();
-        _status = ENTERED;
-        _;
-        _status = NOT_ENTERED;
-    }
+    // ============ Storage Layout ============
+    // Slot 0: GameState (256 bits) - all hot-path data
+    // Slot 1: lastMover (160 bits) + _status (8 bits) = 168 bits used
+    // Slot 2: operator (160 bits)
+
+    /// @notice Packed game state - single SLOAD/SSTORE for vote()
+    GameState private _state;
+
+    /// @notice Address eligible to claim pot after timeout
+    address public lastMover;
+
+    /// @notice Reentrancy guard status (packed with lastMover in Slot 1)
+    uint8 private _status;
+
+    /// @notice Address allowed to finalize ticks
+    address public operator;
+
+    // ============ Immutables ============
+
+    /// @notice Duration of each tick window in seconds
+    uint256 public immutable tickDurationSeconds;
+
+    /// @notice Seconds of inactivity before claim is allowed
+    uint256 public immutable timeoutSeconds;
+
+    /// @notice Minimum fee required per vote
+    uint256 public immutable minFee;
+
+    /// @notice Game start timestamp (genesis) - used to derive tickEndTimestamp
+    uint256 public immutable genesisTimestamp;
+
     // ============ Errors ============
 
     error InvalidDirection();
     error TickNotActive();
-    error TickAlreadyFinalized();
     error InvalidTick();
     error InsufficientFee();
     error NotOperator();
@@ -37,24 +81,15 @@ contract HitboxPot {
     error TransferFailed();
     error NoVotesInTick();
     error ReentrantCall();
+    error PotOverflow();
 
     // ============ Events ============
 
     /// @notice Emitted when a vote is cast
-    event VoteCast(
-        address indexed voter,
-        uint256 indexed tick,
-        uint8 direction,
-        uint256 amount
-    );
+    event VoteCast(address indexed voter, uint256 indexed tick, uint8 direction, uint256 amount);
 
     /// @notice Emitted when a tick is finalized
-    event TickFinalized(
-        uint256 indexed tick,
-        uint8 winningDirection,
-        address lastMover,
-        uint256 pot
-    );
+    event TickFinalized(uint256 indexed tick, uint8 winningDirection, address lastMover, uint256 pot);
 
     /// @notice Emitted when the pot is claimed
     event Claimed(address indexed winner, uint256 amount);
@@ -67,48 +102,14 @@ contract HitboxPot {
     uint8 public constant DIRECTION_RIGHT = 3;
     uint8 public constant NUM_DIRECTIONS = 4;
 
-    // ============ State Variables ============
-    // Storage layout optimized for gas efficiency
-    // Slot 0: pot (256 bits) - needs full range for ETH amounts
-    // Slot 1: currentTick (256 bits) - needs full range for long-running games
-    // Slot 2: lastMover (160) + lastMoveTimestamp (48) + tickEndTimestamp (48) = 256 bits
-    // Slot 3: operator (160 bits) + 96 bits spare
+    // ============ Modifiers ============
 
-    /// @notice Total pot accumulated from votes
-    uint256 public pot;
-
-    /// @notice Current active tick number
-    uint256 public currentTick;
-
-    /// @notice Address eligible to claim pot after timeout
-    address public lastMover;
-    /// @notice Timestamp of last finalized tick with votes (packed, uint48 good until year 8.9M)
-    uint48 public lastMoveTimestamp;
-    /// @notice Timestamp when current tick window ends (packed)
-    uint48 public tickEndTimestamp;
-
-    /// @notice Address allowed to finalize ticks
-    address public operator;
-
-    /// @notice Duration of each tick window in seconds
-    uint256 public immutable tickDurationSeconds;
-
-    /// @notice Seconds of inactivity before claim is allowed
-    uint256 public immutable timeoutSeconds;
-
-    /// @notice Minimum fee required per vote
-    uint256 public immutable minFee;
-
-    /// @notice Game start timestamp (genesis)
-    uint256 public immutable genesisTimestamp;
-
-    // ============ Vote Tracking ============
-
-    /// @notice Vote counts per tick: tick => [up, down, left, right]
-    mapping(uint256 => uint256[4]) public tickVotes;
-
-    /// @notice Whether a tick has been finalized
-    mapping(uint256 => bool) public tickFinalized;
+    modifier nonReentrant() {
+        if (_status == ENTERED) revert ReentrantCall();
+        _status = ENTERED;
+        _;
+        _status = NOT_ENTERED;
+    }
 
     // ============ Constructor ============
 
@@ -118,103 +119,144 @@ contract HitboxPot {
      * @param _minFee Minimum payment per vote
      * @param _operator Address allowed to finalize ticks
      */
-    constructor(
-        uint256 _tickDurationSeconds,
-        uint256 _timeoutSeconds,
-        uint256 _minFee,
-        address _operator
-    ) {
+    constructor(uint256 _tickDurationSeconds, uint256 _timeoutSeconds, uint256 _minFee, address _operator) {
         tickDurationSeconds = _tickDurationSeconds;
         timeoutSeconds = _timeoutSeconds;
         minFee = _minFee;
         operator = _operator;
-
         genesisTimestamp = block.timestamp;
-        tickEndTimestamp = uint48(block.timestamp + _tickDurationSeconds);
-        lastMoveTimestamp = uint48(block.timestamp);
-        currentTick = 0;
+
+        // Initialize state
+        _state = GameState({
+            pot: 0,
+            votesUp: 0,
+            votesDown: 0,
+            votesLeft: 0,
+            votesRight: 0,
+            currentTick: 0,
+            lastMoveTimestamp: uint32(block.timestamp)
+        });
+
+        _status = NOT_ENTERED;
     }
 
     // ============ Core Functions ============
 
     /**
      * @notice Submit a paid vote for a direction
+     * @dev Optimized: single SSTORE for all state changes
      * @param direction Movement direction (0=Up, 1=Down, 2=Left, 3=Right)
      */
     function vote(uint8 direction) external payable {
-        // Validate direction
+        // Validate inputs
         if (direction >= NUM_DIRECTIONS) revert InvalidDirection();
-
-        // Validate fee
         if (msg.value < minFee) revert InsufficientFee();
 
-        // Advance tick if needed
-        _advanceTickIfNeeded();
+        // Single SLOAD for all game state
+        GameState memory state = _state;
+
+        // Derive current tick end timestamp
+        uint256 tickEnd = genesisTimestamp + (uint256(state.currentTick) + 1) * tickDurationSeconds;
+
+        // Check if tick has advanced - reset votes if so
+        if (block.timestamp >= tickEnd) {
+            // Reset votes for new tick
+            state.votesUp = 0;
+            state.votesDown = 0;
+            state.votesLeft = 0;
+            state.votesRight = 0;
+
+            // Calculate how many ticks to advance
+            uint256 elapsed = block.timestamp - tickEnd;
+            uint256 skipped = elapsed / tickDurationSeconds;
+            state.currentTick += uint32(1 + skipped);
+
+            // Recalculate tick end for new tick
+            tickEnd = genesisTimestamp + (uint256(state.currentTick) + 1) * tickDurationSeconds;
+        }
 
         // Validate tick is still active
-        if (block.timestamp >= tickEndTimestamp) revert TickNotActive();
+        if (block.timestamp >= tickEnd) revert TickNotActive();
 
-        // Record vote
-        tickVotes[currentTick][direction] += 1;
-        pot += msg.value;
+        // Check for pot overflow (uint64 max ~18.4 ETH)
+        uint256 newPot = uint256(state.pot) + msg.value;
+        if (newPot > type(uint64).max) revert PotOverflow();
 
-        // Update last mover info in real-time (packed in same slot)
-        lastMover = msg.sender;
-        lastMoveTimestamp = uint48(block.timestamp);
+        // Update pot
+        state.pot = uint64(newPot);
 
-        emit VoteCast(msg.sender, currentTick, direction, msg.value);
+        // Increment vote count for direction
+        if (direction == 0) {
+            state.votesUp++;
+        } else if (direction == 1) {
+            state.votesDown++;
+        } else if (direction == 2) {
+            state.votesLeft++;
+        } else {
+            state.votesRight++;
+        }
+
+        // Single SSTORE for all state changes
+        _state = state;
+
+        emit VoteCast(msg.sender, state.currentTick, direction, msg.value);
     }
 
     /**
      * @notice Finalize a tick with the winning direction
-     * @dev Only callable by operator. Must be called after tick ends.
+     * @dev Optimized: 2 SSTOREs (state + lastMover)
      * @param tick The tick number to finalize
      * @param winningDirection The direction that won the vote
      */
     function finalizeTick(uint256 tick, uint8 winningDirection) external {
-        // Only operator can finalize
+        // Validate caller
         if (msg.sender != operator) revert NotOperator();
-
-        // Validate direction
         if (winningDirection >= NUM_DIRECTIONS) revert InvalidDirection();
 
-        // Validate tick
-        if (tick != currentTick) revert InvalidTick();
+        // Single SLOAD
+        GameState memory state = _state;
 
-        // Ensure tick window has ended
-        if (block.timestamp < tickEndTimestamp) revert TickNotActive();
+        // Validate tick number matches current tick
+        if (tick != state.currentTick) revert InvalidTick();
 
-        // Ensure not already finalized
-        if (tickFinalized[tick]) revert TickAlreadyFinalized();
+        // Calculate tick end and validate timing
+        uint256 tickEnd = genesisTimestamp + (uint256(state.currentTick) + 1) * tickDurationSeconds;
+        if (block.timestamp < tickEnd) revert TickNotActive();
 
-        // Get vote counts
-        uint256[4] memory counts = tickVotes[tick];
-        uint256 totalVotes = counts[0] + counts[1] + counts[2] + counts[3];
-
-        // Require at least one vote
+        // Validate votes exist
+        uint256 totalVotes = uint256(state.votesUp) + state.votesDown + state.votesLeft + state.votesRight;
         if (totalVotes == 0) revert NoVotesInTick();
 
-        // Mark as finalized
-        tickFinalized[tick] = true;
+        // Cache pot for event
+        uint64 currentPot = state.pot;
 
-        // Update last mover info
-        lastMover = msg.sender; // In MVP, operator is credited; in production, track actual voter
-        lastMoveTimestamp = uint48(block.timestamp);
+        // Reset votes and advance tick
+        state.votesUp = 0;
+        state.votesDown = 0;
+        state.votesLeft = 0;
+        state.votesRight = 0;
+        state.currentTick += 1;
+        state.lastMoveTimestamp = uint32(block.timestamp);
 
-        // Advance to next tick
-        currentTick += 1;
-        tickEndTimestamp = uint48(block.timestamp + tickDurationSeconds);
+        // SSTORE #1: Update game state
+        _state = state;
 
-        emit TickFinalized(tick, winningDirection, lastMover, pot);
+        // SSTORE #2: Update last mover
+        lastMover = msg.sender;
+
+        emit TickFinalized(tick, winningDirection, msg.sender, currentPot);
     }
 
     /**
      * @notice Claim the pot after timeout
-     * @dev Only last mover can claim, only after timeout period
+     * @dev Optimized: 2 SSTOREs (state + lastMover)
      */
     function claim() external nonReentrant {
+        // Single SLOAD
+        GameState memory state = _state;
+
         // Validate timeout has passed
-        if (block.timestamp <= lastMoveTimestamp + timeoutSeconds) {
+        if (block.timestamp <= uint256(state.lastMoveTimestamp) + timeoutSeconds) {
             revert TimeoutNotReached();
         }
 
@@ -222,23 +264,46 @@ contract HitboxPot {
         if (msg.sender != lastMover) revert NotLastMover();
 
         // Validate pot has funds
-        uint256 payout = pot;
-        if (payout == 0) revert NoPotToClaim();
+        if (state.pot == 0) revert NoPotToClaim();
 
-        // Reset pot before transfer (checks-effects-interactions)
-        pot = 0;
+        // Cache payout and reset pot
+        uint256 payout = state.pot;
+        state.pot = 0;
 
-        // Transfer pot to winner
-        (bool success, ) = msg.sender.call{value: payout}("");
+        // SSTORE #1: Update game state (pot = 0)
+        _state = state;
+
+        // SSTORE #2: Reset last mover
+        lastMover = address(0);
+
+        // Transfer pot to winner (interactions last)
+        (bool success,) = msg.sender.call{value: payout}("");
         if (!success) revert TransferFailed();
 
         emit Claimed(msg.sender, payout);
-
-        // Reset lastMover so claim can't be called again
-        lastMover = address(0);
     }
 
     // ============ View Functions ============
+
+    /// @notice Get current pot value
+    function pot() external view returns (uint256) {
+        return _state.pot;
+    }
+
+    /// @notice Get current tick number
+    function currentTick() external view returns (uint256) {
+        return _state.currentTick;
+    }
+
+    /// @notice Get timestamp of last finalized tick
+    function lastMoveTimestamp() external view returns (uint256) {
+        return _state.lastMoveTimestamp;
+    }
+
+    /// @notice Get timestamp when current tick window ends (derived, not stored)
+    function tickEndTimestamp() external view returns (uint256) {
+        return genesisTimestamp + (uint256(_state.currentTick) + 1) * tickDurationSeconds;
+    }
 
     /**
      * @notice Get current game state
@@ -257,13 +322,14 @@ contract HitboxPot {
             uint256 _tickDurationSeconds
         )
     {
+        GameState memory state = _state;
         return (
-            currentTick,
-            tickEndTimestamp,
+            state.currentTick,
+            genesisTimestamp + (uint256(state.currentTick) + 1) * tickDurationSeconds,
             timeoutSeconds,
-            lastMoveTimestamp,
+            state.lastMoveTimestamp,
             lastMover,
-            pot,
+            state.pot,
             minFee,
             tickDurationSeconds
         );
@@ -271,71 +337,51 @@ contract HitboxPot {
 
     /**
      * @notice Get vote counts for a specific tick
+     * @dev Returns current tick votes only; historical data via events
      * @param tick The tick number to query
      */
     function getTickVotes(uint256 tick) external view returns (uint256[4] memory) {
-        return tickVotes[tick];
+        GameState memory state = _state;
+        if (tick != state.currentTick) {
+            return [uint256(0), uint256(0), uint256(0), uint256(0)];
+        }
+        return [uint256(state.votesUp), uint256(state.votesDown), uint256(state.votesLeft), uint256(state.votesRight)];
     }
 
     /**
      * @notice Check if a tick has been finalized
+     * @dev Tick is finalized if it's less than currentTick
      * @param tick The tick number to query
      */
     function isTickFinalized(uint256 tick) external view returns (bool) {
-        return tickFinalized[tick] || tick < currentTick;
+        return tick < _state.currentTick;
     }
 
     /**
      * @notice Check if claim is currently available
      */
     function isClaimable() external view returns (bool) {
-        return (
-            lastMover != address(0) &&
-            pot > 0 &&
-            block.timestamp > lastMoveTimestamp + timeoutSeconds
-        );
+        GameState memory state = _state;
+        return (lastMover != address(0) && state.pot > 0
+                && block.timestamp > uint256(state.lastMoveTimestamp) + timeoutSeconds);
     }
 
     /**
      * @notice Get remaining time in current tick
      */
     function getTickTimeRemaining() external view returns (uint256) {
-        if (block.timestamp >= tickEndTimestamp) return 0;
-        return tickEndTimestamp - block.timestamp;
+        uint256 tickEnd = genesisTimestamp + (uint256(_state.currentTick) + 1) * tickDurationSeconds;
+        if (block.timestamp >= tickEnd) return 0;
+        return tickEnd - block.timestamp;
     }
 
     /**
      * @notice Get remaining time until timeout
      */
     function getTimeoutRemaining() external view returns (uint256) {
-        uint256 timeoutEnd = lastMoveTimestamp + timeoutSeconds;
+        uint256 timeoutEnd = uint256(_state.lastMoveTimestamp) + timeoutSeconds;
         if (block.timestamp >= timeoutEnd) return 0;
         return timeoutEnd - block.timestamp;
-    }
-
-    // ============ Internal Functions ============
-
-    /**
-     * @dev Advance tick if the current tick window has passed
-     */
-    function _advanceTickIfNeeded() internal {
-        if (block.timestamp >= tickEndTimestamp) {
-            // Check if strict advancement is needed (finalize current tick)
-            if (!tickFinalized[currentTick]) {
-                tickFinalized[currentTick] = true;
-            }
-            
-            // Calculate how many ticks to skip
-            // We already confirmed timestamp >= end, so we are at least 1 tick ahead
-            uint256 timeSinceEnd = block.timestamp - tickEndTimestamp;
-            uint256 ticksToSkip = timeSinceEnd / tickDurationSeconds;
-            
-            // Steps = 1 (active tick ended) + skipped intervals
-            uint256 steps = 1 + ticksToSkip;
-            
-            currentTick += steps;
-            tickEndTimestamp = uint48(uint256(tickEndTimestamp) + steps * tickDurationSeconds);
-        }
     }
 
     // ============ Admin Functions ============

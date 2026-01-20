@@ -68,7 +68,7 @@ contract HitboxPotTest is Test {
         uint256 gasBefore = gasleft();
         hitbox.vote{value: MIN_FEE}(0);
         uint256 gasUsed = gasBefore - gasleft();
-        
+
         console.log("Gas used for vote:", gasUsed);
         assertTrue(gasUsed < 200000, "Gas used should be less than 200k");
     }
@@ -145,6 +145,7 @@ contract HitboxPotTest is Test {
         vm.prank(operator);
         hitbox.finalizeTick(0, 0);
 
+        // After finalization, currentTick advances to 1, so trying to finalize tick 0 again fails with InvalidTick
         vm.prank(operator);
         vm.expectRevert(HitboxPot.InvalidTick.selector);
         hitbox.finalizeTick(0, 0);

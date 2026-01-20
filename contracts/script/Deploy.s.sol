@@ -22,12 +22,7 @@ contract DeployHitboxPot is Script {
 
         vm.startBroadcast();
 
-        HitboxPot hitbox = new HitboxPot(
-            tickDuration,
-            timeout,
-            minFee,
-            operator
-        );
+        HitboxPot hitbox = new HitboxPot(tickDuration, timeout, minFee, operator);
 
         console.log("HitboxPot deployed at:", address(hitbox));
 
