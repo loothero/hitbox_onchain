@@ -12,7 +12,9 @@
     "dependencies": {
         "@hitbox/core": "*",
         "@tanstack/react-query": "^5.28.0",
+        "@types/p5": "^1.7.7",
         "lucide-react": "^0.363.0",
+        "p5": "^2.2.0",
         "react": "^18.2.0",
         "react-dom": "^18.2.0",
         "viem": "^2.21.0",

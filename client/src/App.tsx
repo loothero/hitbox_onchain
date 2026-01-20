@@ -1,16 +1,28 @@
 import { useState, useEffect } from 'react'
-import { useAccount, useConnect, useDisconnect, useWatchContractEvent } from 'wagmi'
+import { useAccount, useConnect, useDisconnect, useChainId, usePublicClient } from 'wagmi'
 import { useGameState, useVote, useClaim, useCurrentTickVotes } from './onchain/hooks'
 import { HITBOX_POT_ABI, HITBOX_POT_ADDRESS } from './onchain/contracts'
 import { formatEther } from 'viem'
 import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Wallet, Coins, Timer, Trophy } from 'lucide-react'
 import { EventLog } from './components/EventLog'
+import { P5Canvas } from './components/P5Canvas'
 
 function App() {
     const { address, isConnected } = useAccount()
+    const chainId = useChainId()
     const { connect, connectors } = useConnect()
     const { disconnect } = useDisconnect()
     const { state, isLoading } = useGameState()
+    
+    // Debug: Log chain connection
+    useEffect(() => {
+        if (isConnected) {
+            console.log('Wallet connected to chain:', chainId, 'Expected: 31337 (Anvil)')
+            if (chainId !== 31337) {
+                console.warn('⚠️ Wallet is not connected to Anvil (31337). Events may not work correctly.')
+            }
+        }
+    }, [isConnected, chainId])
     const { vote, isPending: isVotePending, isSuccess: isVoteSuccess } = useVote()
     const { claim, isPending: isClaimPending } = useClaim()
     const { votes: currentVotes } = useCurrentTickVotes()
@@ -19,8 +31,10 @@ function App() {
     const [timeoutLeft, setTimeoutLeft] = useState<number>(0)
     const [lastWinningDir, setLastWinningDir] = useState<number | null>(null)
     const [coords, setCoords] = useState<{ x: number, y: number }>({ x: 0, y: 0 })
+    const [exploredTiles, setExploredTiles] = useState<Set<string>>(new Set())
     const [votedDirection, setVotedDirection] = useState<number | null>(null)
     const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+    const [isReconstructing, setIsReconstructing] = useState(true)
 
     const getDirectionName = (dir: number) => {
         switch (dir) {
@@ -53,42 +67,145 @@ function App() {
         setVotedDirection(null)
     }, [state?.currentTick])
 
-    // Watch for tick finalization to show previous move
-    useWatchContractEvent({
-        address: HITBOX_POT_ADDRESS,
-        abi: HITBOX_POT_ABI,
-        eventName: 'TickFinalized',
-        onLogs(logs) {
-            const log = logs[0] as any
-            if (log && log.args) {
-                const dir = Number(log.args.winningDirection)
-                setLastWinningDir(dir)
+    // Watch for tick finalization to show previous move using viem directly
+    const publicClient = usePublicClient({ chainId: 31337 })
 
-                // Update coordinates
-                setCoords(prev => {
-                    const next = { ...prev }
-                    if (dir === 0) next.y -= 1 // Up
-                    if (dir === 1) next.y += 1 // Down
-                    if (dir === 2) next.x -= 1 // Left
-                    if (dir === 3) next.x += 1 // Right
-                    return next
-                })
-            }
-        },
-    })
-
-    // Countdown timers
+    // Reconstruct cursor position from event history on initial load
     useEffect(() => {
-        if (!state) return
+        if (!publicClient || !isReconstructing) return
 
-        const interval = setInterval(() => {
+        const reconstructPosition = async () => {
+            try {
+                console.log('Reconstructing cursor position from event history...')
+                const logs = await publicClient.getContractEvents({
+                    address: HITBOX_POT_ADDRESS,
+                    abi: HITBOX_POT_ABI,
+                    eventName: 'TickFinalized',
+                    fromBlock: 'earliest',
+                    toBlock: 'latest',
+                })
+
+                console.log(`Found ${logs.length} TickFinalized events`)
+
+                let x = 0, y = 0
+                const explored = new Set<string>()
+
+                logs.forEach((log: any) => {
+                    const dir = Number(log.args.winningDirection)
+                    if (dir === 0) y -= 1 // Up
+                    if (dir === 1) y += 1 // Down
+                    if (dir === 2) x -= 1 // Left
+                    if (dir === 3) x += 1 // Right
+
+                    // Add tiles to explored set (FOG_RADIUS = 1, so 3x3 around position)
+                    for (let dx = -1; dx <= 1; dx++) {
+                        for (let dy = -1; dy <= 1; dy++) {
+                            explored.add(`${x + dx},${y + dy}`)
+                        }
+                    }
+                })
+
+                // Also explore tiles around starting position (0,0)
+                for (let dx = -1; dx <= 1; dx++) {
+                    for (let dy = -1; dy <= 1; dy++) {
+                        explored.add(`${dx},${dy}`)
+                    }
+                }
+
+                console.log(`Reconstructed cursor position: (${x}, ${y}), explored ${explored.size} tiles`)
+                setCoords({ x, y })
+                setExploredTiles(explored)
+                setIsReconstructing(false)
+            } catch (error) {
+                console.error('Failed to reconstruct position:', error)
+                setIsReconstructing(false)
+            }
+        }
+
+        reconstructPosition()
+    }, [publicClient, isReconstructing])
+
+    useEffect(() => {
+        if (!publicClient) {
+            console.warn('Public client not available for chain 31337')
+            return
+        }
+
+        console.log('Setting up TickFinalized event watcher in App...')
+        const unwatch = publicClient.watchContractEvent({
+            address: HITBOX_POT_ADDRESS,
+            abi: HITBOX_POT_ABI,
+            eventName: 'TickFinalized',
+            onLogs(logs) {
+                console.log('TickFinalized event received in App:', logs)
+                if (logs && logs.length > 0) {
+                    const log = logs[0] as any
+                    if (log && log.args) {
+                        const dir = Number(log.args.winningDirection)
+                        console.log('Updating cursor position with direction:', dir)
+                        setLastWinningDir(dir)
+
+                        // Update coordinates and explored tiles
+                        setCoords(prev => {
+                            const next = { ...prev }
+                            if (dir === 0) next.y -= 1 // Up
+                            if (dir === 1) next.y += 1 // Down
+                            if (dir === 2) next.x -= 1 // Left
+                            if (dir === 3) next.x += 1 // Right
+                            console.log('New coordinates:', next)
+                            
+                            // Mark new tile as explored
+                            const tileKey = `${next.x},${next.y}`
+                            setExploredTiles(prevTiles => {
+                                const newTiles = new Set(prevTiles)
+                                newTiles.add(tileKey)
+                                // Also mark surrounding tiles as explored (FOG_RADIUS = 1)
+                                for (let dx = -1; dx <= 1; dx++) {
+                                    for (let dy = -1; dy <= 1; dy++) {
+                                        newTiles.add(`${next.x + dx},${next.y + dy}`)
+                                    }
+                                }
+                                return newTiles
+                            })
+                            
+                            return next
+                        })
+                    }
+                }
+            },
+            onError(error) {
+                console.error('Error watching TickFinalized events in App:', error)
+            },
+        })
+
+        return () => {
+            console.log('Cleaning up TickFinalized event watcher in App')
+            unwatch()
+        }
+    }, [publicClient])
+
+    // Countdown timers - update every second
+    useEffect(() => {
+        if (!state) {
+            setTimeLeft(0)
+            setTimeoutLeft(0)
+            return
+        }
+
+        const updateTimers = () => {
             const now = Math.floor(Date.now() / 1000)
-            const tRemaining = Math.max(0, state.tickEndTimestamp - now)
-            const oRemaining = Math.max(0, (state.lastMoveTimestamp + state.timeoutSeconds) - now)
+            const tRemaining = Math.max(0, Number(state.tickEndTimestamp) - now)
+            const oRemaining = Math.max(0, (Number(state.lastMoveTimestamp) + Number(state.timeoutSeconds)) - now)
 
             setTimeLeft(tRemaining)
             setTimeoutLeft(oRemaining)
-        }, 1000)
+        }
+
+        // Update immediately
+        updateTimers()
+
+        // Then update every second
+        const interval = setInterval(updateTimers, 1000)
 
         return () => clearInterval(interval)
     }, [state])
@@ -152,6 +269,41 @@ function App() {
             )}
 
             <main className="app-main">
+                {/* Game World Canvas */}
+                <section className="game-world-section" style={{ 
+                    gridColumn: '1 / -1', 
+                    marginBottom: '20px',
+                    display: 'flex',
+                    justifyContent: 'center'
+                }}>
+                    <div style={{ 
+                        background: '#1a1a2e',
+                        padding: '20px',
+                        borderRadius: '12px',
+                        boxShadow: '0 4px 6px rgba(0,0,0,0.3)'
+                    }}>
+                        <h3 style={{ 
+                            color: '#fff', 
+                            marginBottom: '10px',
+                            textAlign: 'center',
+                            fontSize: '18px'
+                        }}>
+                            Explore the World
+                        </h3>
+                        <P5Canvas
+                            cursorX={coords.x}
+                            cursorY={coords.y}
+                            exploredTiles={exploredTiles}
+                            currentTick={state?.currentTick ? Number(state.currentTick) : 0}
+                            pot={state?.pot || 0n}
+                            genesisTimestamp={state?.genesisTimestamp}
+                            theme="Vaporwave"
+                            width={1024}
+                            height={1024}
+                        />
+                    </div>
+                </section>
+
                 {/* Pot & Status Column */}
                 <section className="status-column">
                     {/* Pot Card */}
@@ -190,7 +342,7 @@ function App() {
                         <div className="progress-bar">
                             <div
                                 className="progress-fill"
-                                style={{ width: `${(timeLeft / (state?.tickDurationSeconds || 60)) * 100}%` }}
+                                style={{ width: `${state && state.tickDurationSeconds > 0 ? (timeLeft / state.tickDurationSeconds) * 100 : 0}%` }}
                             ></div>
                         </div>
 
