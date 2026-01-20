@@ -1,9 +1,9 @@
 {
     "HitboxPot": {
-        "address": "0x610178da211fef7d417bc0e6fed39f05609ad788",
+        "address": "0xFD471836031dc5108809D173A067e8486B9047A3",
         "minFee": "0.0001 ETH",
-        "tickDurationSeconds": "3",
-        "timeoutSeconds": "3600",
+        "tickDurationSeconds": "5",
+        "timeoutSeconds": "60",
         "operator": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
         "commit": "current"
     }

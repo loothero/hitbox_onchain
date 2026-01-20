@@ -1,5 +1,5 @@
 // Local contract address - update after deployment
-export const HITBOX_POT_ADDRESS = '0x610178da211fef7d417bc0e6fed39f05609ad788' as const
+export const HITBOX_POT_ADDRESS = '0xFD471836031dc5108809D173A067e8486B9047A3' as const
 
 export const HITBOX_POT_ABI = [
     {
@@ -90,5 +90,12 @@ export const HITBOX_POT_ABI = [
         stateMutability: "view",
         inputs: [{ name: "tick", type: "uint256" }],
         outputs: [{ name: "", type: "uint256[4]" }],
+    },
+    {
+        name: "genesisTimestamp",
+        type: "function",
+        stateMutability: "view",
+        inputs: [],
+        outputs: [{ name: "", type: "uint256" }],
     },
 ] as const

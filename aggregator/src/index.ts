@@ -3,12 +3,20 @@
  * Starts the tick loop and API server
  */
 import express from "express";
+import cors from "cors";
 import { chainClient } from "./chainClient.js";
 import { startTickLoop } from "./tickLoop.js";
 
 const PORT = process.env.PORT || 3001;
 
 const app = express();
+
+// Enable CORS for client requests
+app.use(cors({
+    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    credentials: true,
+}));
+
 app.use(express.json());
 
 // ============ API Endpoints ============

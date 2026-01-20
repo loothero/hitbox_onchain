@@ -15,6 +15,6 @@ export const config = createConfig({
     connectors: [injected()],
     transports: {
         [baseSepolia.id]: http(),
-        [foundry.id]: http('http://127.0.0.1:8545'),
+        [anvil.id]: http('http://127.0.0.1:8545'),
     },
 })
