@@ -1,66 +1,100 @@
-## Foundry
+# Hitbox Contracts
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+Solidity smart contracts for Hitbox Onchain, built with [Foundry](https://book.getfoundry.sh/).
 
-Foundry consists of:
+## Overview
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+**HitboxPot.sol** - Core escrow and settlement contract:
+- Accept paid votes for cursor direction
+- Track vote counts per tick
+- Operator-controlled tick finalization
+- Timeout-based pot claims
 
-## Documentation
-
-https://book.getfoundry.sh/
-
-## Usage
+## Development
 
 ### Build
 
-```shell
-$ forge build
+```bash
+forge build
 ```
 
 ### Test
 
-```shell
-$ forge test
-```
-
-### Format
-
-```shell
-$ forge fmt
+```bash
+forge test                    # All tests
+forge test -vvv               # Verbose
+forge test --gas-report       # With gas metrics
+forge test --match-path test/gas/Gas.t.sol  # Gas tests only
 ```
 
 ### Gas Snapshots
 
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
+```bash
+forge snapshot        # Create baseline
+forge snapshot --check  # Check for regressions
 ```
 
 ### Deploy
 
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
+```bash
+# Local (Anvil)
+anvil  # In separate terminal
+forge script script/Deploy.s.sol --rpc-url http://127.0.0.1:8545 --broadcast
+
+# With custom params
+TICK_DURATION=5 TIMEOUT_SECONDS=60 forge script script/Deploy.s.sol \
+  --rpc-url http://127.0.0.1:8545 \
+  --private-key $PRIVATE_KEY \
+  --broadcast
 ```
 
-### Cast
+## Contract Architecture
 
-```shell
-$ cast <subcommand>
+```
+src/
+├── HitboxPot.sol    # Main contract
+
+test/
+├── HitboxPot.t.sol  # Unit & fuzz tests
+└── gas/
+    └── Gas.t.sol    # Gas measurement tests
+
+script/
+└── Deploy.s.sol     # Deployment script
+
+docs/
+├── GAS_SCOPE.md     # Optimization priorities
+└── gas/             # Per-function gas analysis
 ```
 
-### Help
+## Key Functions
 
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+| Function | Access | Description |
+|----------|--------|-------------|
+| `vote(direction)` | Public (payable) | Submit paid vote |
+| `finalizeTick(tick, direction)` | Operator | Finalize winning direction |
+| `claim()` | Last mover | Claim pot after timeout |
+| `getState()` | View | Current game state |
+
+## Gas Optimization
+
+Storage layout optimized for minimal SSTOREs:
+- Slot 0: `pot` (256 bits)
+- Slot 1: `currentTick` (256 bits)
+- Slot 2: `lastMover` (160) + `lastMoveTimestamp` (48) + `tickEndTimestamp` (48)
+- Slot 3: `operator` (160 bits)
+
+Results:
+- Cold vote: ~67k gas
+- Warm vote: ~34k gas
+
+## Security
+
+- Reentrancy guard on `claim()`
+- Checks-effects-interactions pattern
+- Custom errors (no string reverts)
+- Input validation on all external functions
+
+## License
+
+MIT
