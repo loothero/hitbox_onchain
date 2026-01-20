@@ -232,13 +232,15 @@ contract HitboxPotTest is Test {
             uint256 _lastMoveTimestamp,
             address _lastMover,
             uint256 _pot,
-            uint256 _minFee
+            uint256 _minFee,
+            uint256 _tickDurationSeconds
         ) = hitbox.getState();
 
         assertEq(_currentTick, 0);
         assertEq(_timeoutSeconds, TIMEOUT);
         assertEq(_pot, 0);
         assertEq(_minFee, MIN_FEE);
+        assertEq(_tickDurationSeconds, TICK_DURATION);
     }
 
     function test_IsClaimable() public {

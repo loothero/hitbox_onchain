@@ -18,7 +18,7 @@ contract HitboxPot {
     uint256 private _status = NOT_ENTERED;
 
     modifier nonReentrant() {
-        require(_status != ENTERED, "ReentrancyGuard: reentrant call");
+        if (_status == ENTERED) revert ReentrantCall();
         _status = ENTERED;
         _;
         _status = NOT_ENTERED;
@@ -36,6 +36,7 @@ contract HitboxPot {
     error NoPotToClaim();
     error TransferFailed();
     error NoVotesInTick();
+    error ReentrantCall();
 
     // ============ Events ============
 
@@ -67,6 +68,11 @@ contract HitboxPot {
     uint8 public constant NUM_DIRECTIONS = 4;
 
     // ============ State Variables ============
+    // Storage layout optimized for gas efficiency
+    // Slot 0: pot (256 bits) - needs full range for ETH amounts
+    // Slot 1: currentTick (256 bits) - needs full range for long-running games
+    // Slot 2: lastMover (160) + lastMoveTimestamp (48) + tickEndTimestamp (48) = 256 bits
+    // Slot 3: operator (160 bits) + 96 bits spare
 
     /// @notice Total pot accumulated from votes
     uint256 public pot;
@@ -74,26 +80,24 @@ contract HitboxPot {
     /// @notice Current active tick number
     uint256 public currentTick;
 
+    /// @notice Address eligible to claim pot after timeout
+    address public lastMover;
+    /// @notice Timestamp of last finalized tick with votes (packed, uint48 good until year 8.9M)
+    uint48 public lastMoveTimestamp;
+    /// @notice Timestamp when current tick window ends (packed)
+    uint48 public tickEndTimestamp;
+
+    /// @notice Address allowed to finalize ticks
+    address public operator;
+
     /// @notice Duration of each tick window in seconds
     uint256 public immutable tickDurationSeconds;
-
-    /// @notice Timestamp when current tick window ends
-    uint256 public tickEndTimestamp;
 
     /// @notice Seconds of inactivity before claim is allowed
     uint256 public immutable timeoutSeconds;
 
-    /// @notice Timestamp of last finalized tick with votes
-    uint256 public lastMoveTimestamp;
-
-    /// @notice Address eligible to claim pot after timeout
-    address public lastMover;
-
     /// @notice Minimum fee required per vote
     uint256 public immutable minFee;
-
-    /// @notice Address allowed to finalize ticks
-    address public operator;
 
     /// @notice Game start timestamp (genesis)
     uint256 public immutable genesisTimestamp;
@@ -126,8 +130,8 @@ contract HitboxPot {
         operator = _operator;
 
         genesisTimestamp = block.timestamp;
-        tickEndTimestamp = block.timestamp + _tickDurationSeconds;
-        lastMoveTimestamp = block.timestamp;
+        tickEndTimestamp = uint48(block.timestamp + _tickDurationSeconds);
+        lastMoveTimestamp = uint48(block.timestamp);
         currentTick = 0;
     }
 
@@ -154,9 +158,9 @@ contract HitboxPot {
         tickVotes[currentTick][direction] += 1;
         pot += msg.value;
 
-        // Update last mover info in real-time
+        // Update last mover info in real-time (packed in same slot)
         lastMover = msg.sender;
-        lastMoveTimestamp = block.timestamp;
+        lastMoveTimestamp = uint48(block.timestamp);
 
         emit VoteCast(msg.sender, currentTick, direction, msg.value);
     }
@@ -195,11 +199,11 @@ contract HitboxPot {
 
         // Update last mover info
         lastMover = msg.sender; // In MVP, operator is credited; in production, track actual voter
-        lastMoveTimestamp = block.timestamp;
+        lastMoveTimestamp = uint48(block.timestamp);
 
         // Advance to next tick
         currentTick += 1;
-        tickEndTimestamp = block.timestamp + tickDurationSeconds;
+        tickEndTimestamp = uint48(block.timestamp + tickDurationSeconds);
 
         emit TickFinalized(tick, winningDirection, lastMover, pot);
     }
@@ -330,7 +334,7 @@ contract HitboxPot {
             uint256 steps = 1 + ticksToSkip;
             
             currentTick += steps;
-            tickEndTimestamp += steps * tickDurationSeconds;
+            tickEndTimestamp = uint48(uint256(tickEndTimestamp) + steps * tickDurationSeconds);
         }
     }
 

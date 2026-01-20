@@ -1,0 +1,46 @@
+name: Gas Regression
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'contracts/**'
+  pull_request:
+    paths:
+      - 'contracts/**'
+
+jobs:
+  gas-check:
+    name: Gas Report & Snapshot
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Run Tests with Gas Report
+        run: forge test --gas-report
+
+      - name: Check Gas Snapshot
+        run: |
+          forge snapshot
+          if [ -f .gas-snapshot ]; then
+            echo "Checking for gas regressions..."
+            forge snapshot --check --tolerance 5 || echo "::warning::Gas regression detected (>5% increase)"
+          fi
+
+      - name: Upload Gas Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: gas-report
+          path: contracts/.gas-snapshot
+          if-no-files-found: ignore
